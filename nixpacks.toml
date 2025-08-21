@@ -5,12 +5,9 @@
 providers = ["nix"]
 
 # Явно указываем репозиторий Nixpkgs.
-# Это позволяет нам выбрать конкретную версию Nixpkgs, которая
-# гарантированно содержит Node.js v20.
-# Используем актуальную стабильную ветку `nixos-23.05` или `nixos-23.11`.
-# Если возникнут проблемы, возможно, потребуется использовать `nixos-unstable`
-# или найти конкретный коммит Nixpkgs, который гарантирует Node.js 20.
-pkgsArchive = "https://github.com/NixOS/nixpkgs/archive/refs/heads/nixos-23.05.tar.gz" # Попробуйте сначала эту ветку
+# Используем актуальную стабильную ветку `nixos-23.05`.
+# Если возникнут проблемы, попробуйте `nixos-23.11` или `nixos-unstable`.
+pkgsArchive = "https://github.com/NixOS/nixpkgs/archive/refs/heads/nixos-23.05.tar.gz"
 
 # Описываем Nix-окружение, которое будет создано.
 [nix.expression]
@@ -19,25 +16,22 @@ let
   # Импортируем Nixpkgs из указанного архива.
   pkgs = import pkgsArchive {};
 
-  # Определяем пакет Node.js v20. Он включает npm, npx.
-  # Если команда `pkgs.nodejs_20` не найдена, попробуйте `pkgs.nodejs.v20_2.full`
-  # или проверьте доступные пакеты в выбранной версии Nixpkgs.
-  nodejsEnv = pkgs.nodejs_20; # Убедитесь, что это корректное имя пакета в вашу версию nixpkgs
+  # Определяем пакет Node.js v20. Убедитесь, что `pkgs.nodejs_20` существует в выбранной версии Nixpkgs.
+  # Если нет, попробуйте `pkgs.nodejs.v20_2.full` или другое актуальное имя.
+  nodejsEnv = pkgs.nodejs_20;
 
-  # Пакет Chromium.
+  # Определение пакета Chromium.
   chromiumPkg = pkgs.chromium;
 
 in
 # Создаем "оболочку" (shell) для нашего приложения.
-# Это окружение, в котором будут выполняться команды сборки и запуска.
 pkgs.mkShell {
   # Список системных пакетов, которые будут доступны.
   packages = [
-    nodejsEnv      # Добавляет node, npm, npx из v20 в PATH
-    chromiumPkg    # Делает команду chromium доступной
+    nodejsEnv      # Делает `node`, `npm`, `npx` доступными из Node.js 20
+    chromiumPkg    # Делает команду `chromium` доступной
 
-    # Системные библиотеки, которые часто нужны для рендеринга в Chromium.
-    # Даже если они включены в пакет chromium, явное указание повышает надежность.
+    # Системные библиотеки, часто необходимые для Chromium.
     pkgs.libgbm
     pkgs.freetype
     pkgs.pango
@@ -49,43 +43,42 @@ pkgs.mkShell {
   ];
 
   # shellHook выполняется один раз при создании Nix-окружения.
-  # Здесь мы устанавливаем все критически важные переменные окружения.
+  # Здесь мы устанавливаем переменные окружения.
   shellHook = ''
     echo "--- Nix Environment Setup ---"
     echo "Nixpkgs source: ${pkgsArchive}"
-    # Используем явные пути к исполнимым файлам из Nix-store для большей надежности
-    echo "Node.js version via Nix path: $($pkgs.nodejs_20/bin/node --version)"
-    echo "npm version via Nix path:     $(/nix/store/*/bin/npm --version)" # npm обычно в корне Nix-store/bin
-    echo "Chromium path (Nix):          ${pkgs.chromium}/bin/chromium"
+    
+    # Надежный способ проверить доступность `node` и `npm` после установки PATH.
+    # Вместо сложного `$($pkgs.nodejs_20/bin/node ...)` используется `$(which node)`.
+    echo "Node.js executable found via 'which': $(which node)"
+    echo "npm executable found via 'which':     $(which npm)"
+    
+    # Явно отображаем путь к Chromium, как его видит Nix.
+    echo "Chromium path (Nix):          ${chromiumPkg}/bin/chromium"
     echo "---------------------------"
 
     # Экспортируем переменные окружения, которые Puppeteer ищет.
-    export CHROMIUM_PATH="${pkgs.chromium}/bin/chromium"
-    export PUPPETEER_EXECUTABLE_PATH="${pkgs.chromium}/bin/chromium" # Puppeteer часто ищет и эту переменную
+    # Nix уже раскрывает ${chromiumPkg} здесь.
+    export CHROMIUM_PATH="${chromiumPkg}/bin/chromium"
+    export PUPPETEER_EXECUTABLE_PATH="${chromiumPkg}/bin/chromium" # Puppeteer часто ищет эту переменную
 
     # Добавляем директории с исполняемыми файлами Node.js v20 и npm в PATH.
-    # Это гарантирует, что команды `node` и `npm` будут ссылаться на нужные версии.
-    export PATH="${pkgs.nodejs_20.bin}:$PATH"
-    export PATH="${pkgs.npm}/bin:$PATH" # Явно добавляем npm, даже если он в nodejsEnv
+    # Nix раскрывает `${nodejsEnv.bin}` и `${pkgs.npm.bin}` здесь.
+    export PATH="${nodejsEnv.bin}:$PATH"
+    export PATH="${pkgs.npm.bin}:$PATH" # Явно добавляем npm, если он не в nodejsEnv
 
-    # Проверка PATH после изменений
-    echo "Node.js in PATH: $(which node)"
-    echo "npm in PATH: $(which npm)"
+    echo "PATH adjusted. Current node: $(which node), npm: $(which npm)"
   '';
 }
 """
 
-# --- Команды для сборки и запуска ---
-
 # Команда для установки зависимостей проекта (выполняется до startCommand).
-# `npm ci` предпочтительнее для CI/CD, так как он быстрее и надежнее `npm install`.
 installCommand = "npm ci";
 
 # Команда для запуска вашего приложения.
 # Она будет выполнена внутри Nix-окружения, настроенного выше.
 startCommand = """
 echo "--- Application Startup ---"
-# Проверяем версии Node.js, npm и путь к Chromium, как их видит приложение.
 echo "Using Node.js version: $(node --version)"
 echo "Using npm version: $(npm --version)"
 echo "Chromium path environment var: ${CHROMIUM_PATH}"
@@ -94,6 +87,5 @@ echo "---------------------------"
 
 # Запускаем основной файл вашего приложения.
 # Убедитесь, что 'server/index.js' - это правильный путь к вашему стартовому файлу.
-# Если ваш стартовый файл называется иначе или находится в другой папке, измените его.
 node server/index.js
 """
